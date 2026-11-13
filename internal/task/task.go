@@ -1,10 +1,17 @@
 package task
 
-import "fmt"
+import (
+	"fmt"
+	"time"
+)
 
 type Task struct {
-	Type    string `json:"type"`
-	Payload string `json:"payload"`
+	ID         string    `json:"id"`
+	Type       string    `json:"type"`
+	Payload    string    `json:"payload"`
+	EnqueuedAt time.Time `json:"enqueued_at"`
+	StartedAt  time.Time `json:"started_at,omitempty"`
+	Attempts   int       `json:"attempts"`
 }
 
 type Handler func(payload string) error

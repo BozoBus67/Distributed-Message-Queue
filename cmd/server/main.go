@@ -7,7 +7,9 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"time"
 
+	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 	"taskqueue/internal/task"
 )
@@ -30,7 +32,14 @@ func parseEnqueue(r *http.Request) (*enqueueReq, error) {
 }
 
 func enqueueTask(ctx context.Context, rdb *redis.Client, req *enqueueReq) error {
-	data, err := json.Marshal(task.Task{Type: req.Type, Payload: req.Payload})
+	t := task.Task{
+		ID:         uuid.NewString(),
+		Type:       req.Type,
+		Payload:    req.Payload,
+		EnqueuedAt: time.Now().UTC(),
+		Attempts:   0,
+	}
+	data, err := json.Marshal(t)
 	if err != nil {
 		return err
 	}
