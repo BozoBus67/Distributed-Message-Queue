@@ -5,18 +5,51 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
+	"taskqueue/internal/events"
 	"taskqueue/internal/task"
 )
 
 type enqueueReq struct {
 	Type    string
 	Payload string
+}
+
+func main() {
+	events.Init()
+	rdb := redis.NewClient(&redis.Options{Addr: "localhost:6379"})
+	ctx := context.Background()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/enqueue", enqueueHandler(ctx, rdb))
+
+	runServer(":8080", mux)
+}
+
+func runServer(addr string, mux *http.ServeMux) {
+	events.ServerStarting(addr)
+	if err := http.ListenAndServe(addr, mux); err != nil {
+		events.ServerFatal(err)
+	}
+}
+
+func enqueueHandler(ctx context.Context, rdb *redis.Client) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		req, err := parseEnqueue(r)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if err := enqueueTask(ctx, rdb, req); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Write([]byte("enqueued\n"))
+	}
 }
 
 func parseEnqueue(r *http.Request) (*enqueueReq, error) {
@@ -44,34 +77,4 @@ func enqueueTask(ctx context.Context, rdb *redis.Client, req *enqueueReq) error 
 		return err
 	}
 	return rdb.LPush(ctx, "queue:default", data).Err()
-}
-
-func enqueueHandler(ctx context.Context, rdb *redis.Client) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		req, err := parseEnqueue(r)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-		if err := enqueueTask(ctx, rdb, req); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		w.Write([]byte("enqueued\n"))
-	}
-}
-
-func runServer(addr string, mux *http.ServeMux) {
-	log.Printf("server listening on %s", addr)
-	log.Fatal(http.ListenAndServe(addr, mux))
-}
-
-func main() {
-	rdb := redis.NewClient(&redis.Options{Addr: "localhost:6379"})
-	ctx := context.Background()
-
-	mux := http.NewServeMux()
-	mux.HandleFunc("/enqueue", enqueueHandler(ctx, rdb))
-
-	runServer(":8080", mux)
 }
