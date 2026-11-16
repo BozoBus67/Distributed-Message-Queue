@@ -9,6 +9,7 @@ type Task struct {
 	ID         string    `json:"id"`
 	Type       string    `json:"type"`
 	Payload    string    `json:"payload"`
+	Queue      string    `json:"queue"`
 	EnqueuedAt time.Time `json:"enqueued_at"`
 	StartedAt  time.Time `json:"started_at,omitempty"`
 	Attempts   int       `json:"attempts"`

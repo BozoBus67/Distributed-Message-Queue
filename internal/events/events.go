@@ -105,3 +105,15 @@ func ReaperError(err error) {
 func SchedulerError(err error) {
 	slog.Error("scheduler tick failed", "error", err)
 }
+
+func SlotDenied(workerID int, queue string) {
+	slog.Info("slot denied", "worker_id", workerID, "queue", queue)
+}
+
+func TokenDenied(workerID int, queue string) {
+	slog.Info("token denied", "worker_id", workerID, "queue", queue)
+}
+
+func ControlError(workerID int, queue, op string, err error) {
+	slog.Error("control error", "worker_id", workerID, "queue", queue, "op", op, "error", err)
+}
