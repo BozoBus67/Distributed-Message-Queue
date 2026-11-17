@@ -3,15 +3,20 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math/rand/v2"
+	"net/http"
+	"os/signal"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/redis/go-redis/v9"
 	"taskqueue/internal/control"
 	"taskqueue/internal/events"
 	"taskqueue/internal/handlers"
+	"taskqueue/internal/metrics"
 	"taskqueue/internal/queueconfig"
 	"taskqueue/internal/task"
 )
@@ -30,18 +35,57 @@ const (
 	denyBackoff       = 500 * time.Millisecond
 	highPreference    = 0.8
 	workerCount       = 10
+	metricsAddr       = ":8081"
+	shutdownTimeout   = 10 * time.Second
 )
 
 func main() {
 	events.Init()
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
 	rdb := redis.NewClient(&redis.Options{Addr: "localhost:6379"})
-	ctx := context.Background()
 
 	registry := task.NewRegistry()
 	handlers.RegisterAll(registry)
 
 	configs := queueconfig.DefaultConfigs()
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		runMetricsServer(ctx, metricsAddr)
+	}()
+
 	runWorkerPool(ctx, rdb, registry, configs, workerCount)
+	wg.Wait()
+	events.WorkerPoolShutdown()
+}
+
+func runMetricsServer(ctx context.Context, addr string) {
+	srv := metrics.NewServer(addr)
+	events.MetricsServing(addr)
+	errCh := make(chan error, 1)
+	go func() {
+		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			errCh <- err
+		}
+		close(errCh)
+	}()
+	select {
+	case <-ctx.Done():
+	case err, ok := <-errCh:
+		if ok && err != nil {
+			events.MetricsError(err)
+		}
+		return
+	}
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+	defer cancel()
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		events.MetricsError(err)
+	}
 }
 
 func runWorkerPool(ctx context.Context, rdb *redis.Client, registry *task.Registry, configs []queueconfig.Config, n int) {
@@ -85,44 +129,49 @@ func processOne(ctx context.Context, rdb *redis.Client, registry *task.Registry,
 	if err == redis.Nil {
 		return
 	}
-	if ctx.Err() != nil {
-		return
-	}
 	if err != nil {
+		if ctx.Err() != nil {
+			return
+		}
 		events.ClaimError(workerID, err)
 		return
 	}
+	// BRPop already removed the entry from pending, so no early ctx.Err() check here; finalCtx below pushes it to processing even on shutdown.
 	srcQueue, rawEntry := res[0], res[1]
 	cfg := byName[srcQueue]
 
-	t, entry, err := stampAndRecord(ctx, rdb, rawEntry)
+	// Once we own the task (post-LPush to processing), run finalization on a
+	// context that ignores shutdown cancel so we don't orphan Redis state.
+	finalCtx := context.WithoutCancel(ctx)
+
+	t, entry, err := stampAndRecord(finalCtx, rdb, rawEntry)
 	if err != nil {
 		events.ClaimError(workerID, err)
 		return
 	}
 
-	if ok, err := control.AcquireSlot(ctx, rdb, srcQueue, t.ID, cfg.MaxConcurrency, int(visibilityTimeout.Seconds())); err != nil {
+	if ok, err := control.AcquireSlot(finalCtx, rdb, srcQueue, t.ID, cfg.MaxConcurrency, int(visibilityTimeout.Seconds())); err != nil {
 		events.ControlError(workerID, srcQueue, "slot", err)
-		revertToDelayed(ctx, rdb, entry, rawEntry)
+		revertToDelayed(finalCtx, rdb, entry, rawEntry)
 		return
 	} else if !ok {
 		events.SlotDenied(workerID, srcQueue)
-		revertToDelayed(ctx, rdb, entry, rawEntry)
+		revertToDelayed(finalCtx, rdb, entry, rawEntry)
 		return
 	}
 	defer func() {
-		if err := control.ReleaseSlot(ctx, rdb, srcQueue, t.ID); err != nil {
+		if err := control.ReleaseSlot(finalCtx, rdb, srcQueue, t.ID); err != nil {
 			events.ControlError(workerID, srcQueue, "release slot", err)
 		}
 	}()
 
-	if ok, err := control.AcquireToken(ctx, rdb, srcQueue, cfg.RateCapacity, cfg.RateRefillPerSec); err != nil {
+	if ok, err := control.AcquireToken(finalCtx, rdb, srcQueue, cfg.RateCapacity, cfg.RateRefillPerSec); err != nil {
 		events.ControlError(workerID, srcQueue, "token", err)
-		revertToDelayed(ctx, rdb, entry, rawEntry)
+		revertToDelayed(finalCtx, rdb, entry, rawEntry)
 		return
 	} else if !ok {
 		events.TokenDenied(workerID, srcQueue)
-		revertToDelayed(ctx, rdb, entry, rawEntry)
+		revertToDelayed(finalCtx, rdb, entry, rawEntry)
 		return
 	}
 
@@ -130,14 +179,16 @@ func processOne(ctx context.Context, rdb *redis.Client, registry *task.Registry,
 
 	if err := registry.Dispatch(*t); err != nil {
 		events.DispatchError(workerID, *t, err)
-		if err := scheduleRetry(ctx, rdb, t, entry); err != nil {
+		if err := scheduleRetry(finalCtx, rdb, t, entry); err != nil {
 			events.ScheduleRetryError(workerID, *t, err)
 		}
 		return
 	}
-	if err := completeTask(ctx, rdb, entry); err != nil {
+	if err := completeTask(finalCtx, rdb, entry); err != nil {
 		events.CompleteError(workerID, *t, err)
+		return
 	}
+	events.TaskCompleted(workerID, *t)
 }
 
 func pickQueueOrder(configs []queueconfig.Config) []string {

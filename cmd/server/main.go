@@ -3,45 +3,75 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 	"taskqueue/internal/events"
+	"taskqueue/internal/metrics"
 	"taskqueue/internal/queueconfig"
 	"taskqueue/internal/task"
 )
 
+const shutdownTimeout = 10 * time.Second
+
 func main() {
 	events.Init()
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
 	rdb := redis.NewClient(&redis.Options{Addr: "localhost:6379"})
-	ctx := context.Background()
 	byName := queueconfig.ByName(queueconfig.DefaultConfigs())
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/enqueue", enqueueHandler(ctx, rdb, byName))
+	mux.HandleFunc("/enqueue", enqueueHandler(rdb, byName))
+	mux.Handle("/metrics", metrics.Handler())
 
-	runServer(":8080", mux)
+	runServer(ctx, ":8080", mux)
 }
 
-func runServer(addr string, mux *http.ServeMux) {
+func runServer(ctx context.Context, addr string, mux *http.ServeMux) {
+	srv := &http.Server{Addr: addr, Handler: mux}
 	events.ServerStarting(addr)
-	if err := http.ListenAndServe(addr, mux); err != nil {
+	errCh := make(chan error, 1)
+	go func() {
+		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			errCh <- err
+		}
+		close(errCh)
+	}()
+
+	select {
+	case <-ctx.Done():
+	case err, ok := <-errCh:
+		if ok && err != nil {
+			events.ServerFatal(err)
+		}
+		return
+	}
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+	defer cancel()
+	if err := srv.Shutdown(shutdownCtx); err != nil {
 		events.ServerFatal(err)
 	}
+	events.ServerShutdown()
 }
 
-func enqueueHandler(ctx context.Context, rdb *redis.Client, byName map[string]queueconfig.Config) http.HandlerFunc {
+func enqueueHandler(rdb *redis.Client, byName map[string]queueconfig.Config) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		cfg, taskType, payload, err := parseEnqueue(r, byName)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		if err := enqueueTask(ctx, rdb, cfg, taskType, payload); err != nil {
+		if err := enqueueTask(r.Context(), rdb, cfg, taskType, payload); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -87,5 +117,9 @@ func enqueueTask(ctx context.Context, rdb *redis.Client, cfg queueconfig.Config,
 	if err != nil {
 		return err
 	}
-	return rdb.LPush(ctx, cfg.Name(), data).Err()
+	if err := rdb.LPush(ctx, cfg.Name(), data).Err(); err != nil {
+		return err
+	}
+	events.TaskEnqueued(t)
+	return nil
 }
