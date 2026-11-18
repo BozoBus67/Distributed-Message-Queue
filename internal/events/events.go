@@ -50,6 +50,22 @@ func SchedulerStarting(interval time.Duration) {
 	slog.Info("scheduler starting", "interval", interval)
 }
 
+func DepthSamplerStarting(interval time.Duration) {
+	slog.Info("depth sampler starting", "interval", interval)
+}
+
+func DepthSamplerError(err error) {
+	slog.Error("depth sampler tick failed", "error", err)
+}
+
+func DLQRequeued(taskID, queue string) {
+	slog.Info("dlq entry requeued", "task_id", taskID, "queue", queue)
+}
+
+func DLQDropped(taskID string) {
+	slog.Warn("dlq entry dropped", "task_id", taskID)
+}
+
 func TaskEnqueued(t task.Task) {
 	metrics.Enqueued.WithLabelValues(t.Queue, t.Type).Inc()
 	slog.Info("task enqueued",

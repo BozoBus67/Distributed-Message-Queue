@@ -22,13 +22,14 @@ import (
 )
 
 const (
-	processingQueue   = "queue:processing"
-	delayedQueue      = "queue:delayed"
-	deadQueue         = "queue:dead"
-	visibilityTimeout = 30 * time.Second
-	reaperInterval    = 10 * time.Second
-	schedulerInterval = 1 * time.Second
-	maxBackoff        = 30 * time.Second
+	processingQueue      = "queue:processing"
+	delayedQueue         = "queue:delayed"
+	deadQueue            = "queue:dead"
+	visibilityTimeout    = 30 * time.Second
+	reaperInterval       = 10 * time.Second
+	schedulerInterval    = 1 * time.Second
+	depthSamplerInterval = 2 * time.Second
+	maxBackoff           = 30 * time.Second
 	maxShift          = 5
 	maxAttempts       = 5
 	claimTimeout      = 1 * time.Second
@@ -101,6 +102,11 @@ func runWorkerPool(ctx context.Context, rdb *redis.Client, registry *task.Regist
 	go func() {
 		defer wg.Done()
 		runScheduler(ctx, rdb)
+	}()
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		runDepthSampler(ctx, rdb, configs)
 	}()
 	for i := 0; i < n; i++ {
 		wg.Add(1)
@@ -361,6 +367,48 @@ func moveReadyRetries(ctx context.Context, rdb *redis.Client) (int, error) {
 		moved++
 	}
 	return moved, nil
+}
+
+func runDepthSampler(ctx context.Context, rdb *redis.Client, configs []queueconfig.Config) {
+	events.DepthSamplerStarting(depthSamplerInterval)
+	ticker := time.NewTicker(depthSamplerInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if err := sampleDepth(ctx, rdb, configs); err != nil {
+				events.DepthSamplerError(err)
+			}
+		}
+	}
+}
+
+func sampleDepth(ctx context.Context, rdb *redis.Client, configs []queueconfig.Config) error {
+	for _, c := range configs {
+		n, err := rdb.LLen(ctx, c.Name()).Result()
+		if err != nil {
+			return fmt.Errorf("llen %s: %w", c.Name(), err)
+		}
+		metrics.QueueDepth.WithLabelValues(c.Name(), "pending").Set(float64(n))
+	}
+	n, err := rdb.LLen(ctx, processingQueue).Result()
+	if err != nil {
+		return fmt.Errorf("llen processing: %w", err)
+	}
+	metrics.QueueDepth.WithLabelValues(processingQueue, "processing").Set(float64(n))
+	n, err = rdb.ZCard(ctx, delayedQueue).Result()
+	if err != nil {
+		return fmt.Errorf("zcard delayed: %w", err)
+	}
+	metrics.QueueDepth.WithLabelValues(delayedQueue, "delayed").Set(float64(n))
+	n, err = rdb.LLen(ctx, deadQueue).Result()
+	if err != nil {
+		return fmt.Errorf("llen dead: %w", err)
+	}
+	metrics.QueueDepth.WithLabelValues(deadQueue, "dead").Set(float64(n))
+	return nil
 }
 
 func summarizeQueues(configs []queueconfig.Config) string {

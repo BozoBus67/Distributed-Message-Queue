@@ -1,0 +1,649 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Task Queue Dashboard</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.6/dist/chart.umd.min.js"></script>
+<style>
+  :root {
+    --bg: #0f1116;
+    --panel: #171a21;
+    --border: #262a35;
+    --fg: #e4e6eb;
+    --fg-dim: #9aa0b0;
+    --accent: #60a5fa;
+    --danger: #ef4444;
+    --warn: #f59e0b;
+    --ok: #10b981;
+    --muted: #4a5265;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    background: var(--bg);
+    color: var(--fg);
+    padding: 20px;
+    min-height: 100vh;
+  }
+  header {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    margin-bottom: 20px;
+    padding-bottom: 12px;
+    border-bottom: 1px solid var(--border);
+  }
+  h1 { margin: 0; font-size: 22px; font-weight: 600; letter-spacing: -0.01em; }
+  .sub { color: var(--fg-dim); font-size: 13px; margin-left: 12px; }
+  .status { font-size: 13px; color: var(--fg-dim); font-family: "SF Mono", Menlo, monospace; }
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(420px, 1fr));
+    gap: 14px;
+  }
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 16px 18px;
+  }
+  .panel h2 {
+    margin: 0 0 12px;
+    font-size: 12px;
+    color: var(--fg-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    font-weight: 600;
+  }
+  .chart-wrap { height: 240px; position: relative; }
+  .panel.wide { grid-column: 1 / -1; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th {
+    text-align: left;
+    color: var(--fg-dim);
+    font-weight: 500;
+    padding: 8px 10px;
+    border-bottom: 1px solid var(--border);
+    text-transform: uppercase;
+    font-size: 11px;
+    letter-spacing: 0.05em;
+  }
+  td {
+    padding: 8px 10px;
+    border-bottom: 1px solid var(--border);
+    font-family: "SF Mono", Menlo, Consolas, monospace;
+    font-size: 12px;
+  }
+  tbody tr:last-child td { border-bottom: none; }
+  .actions button {
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--fg);
+    padding: 4px 10px;
+    border-radius: 5px;
+    cursor: pointer;
+    font-size: 12px;
+    margin-right: 6px;
+    font-family: inherit;
+  }
+  .actions button:hover { border-color: var(--accent); color: var(--accent); }
+  .actions .drop:hover { border-color: var(--danger); color: var(--danger); }
+  .empty { color: var(--muted); font-size: 13px; padding: 16px 4px; text-align: center; }
+  .dot {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--ok);
+    margin-right: 6px;
+    vertical-align: middle;
+    box-shadow: 0 0 6px currentColor;
+  }
+  .dot.err { background: var(--danger); }
+  code.id { color: var(--fg-dim); }
+
+  .enqueue-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 16px;
+    align-items: flex-end;
+  }
+  .enqueue-row label,
+  .enqueue-row .toggle,
+  .enqueue-row .stepper {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .field-label {
+    font-size: 10px;
+    color: var(--fg-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    font-weight: 600;
+  }
+  .enqueue-row select,
+  .enqueue-row input[type="text"],
+  .enqueue-row input[type="number"] {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--fg);
+    padding: 7px 10px;
+    border-radius: 5px;
+    font-family: inherit;
+    font-size: 13px;
+    height: 32px;
+  }
+  .enqueue-row select { min-width: 160px; }
+  .enqueue-row label.payload input { min-width: 220px; }
+  .enqueue-row input[type="number"] {
+    width: 54px;
+    text-align: center;
+    -moz-appearance: textfield;
+    border-radius: 0;
+    border-left-width: 0;
+    border-right-width: 0;
+  }
+  .enqueue-row input[type="number"]::-webkit-inner-spin-button,
+  .enqueue-row input[type="number"]::-webkit-outer-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
+  }
+  .toggle-buttons, .stepper-inner {
+    display: flex;
+    align-items: stretch;
+  }
+  .toggle-buttons button, .stepper-inner button {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--fg-dim);
+    cursor: pointer;
+    font-family: inherit;
+    font-size: 13px;
+    padding: 0 12px;
+    height: 32px;
+  }
+  .stepper-inner button {
+    font-size: 16px;
+    width: 32px;
+    padding: 0;
+    color: var(--fg);
+  }
+  .toggle-buttons button:first-child,
+  .stepper-inner button:first-child { border-radius: 5px 0 0 5px; }
+  .toggle-buttons button:last-child,
+  .stepper-inner button:last-child { border-radius: 0 5px 5px 0; border-left-width: 0; }
+  .stepper-inner button:last-child { border-left-width: 1px; }
+  .toggle-buttons button.active {
+    background: var(--panel);
+    color: var(--accent);
+    border-color: var(--accent);
+    position: relative;
+    z-index: 1;
+  }
+  .toggle-buttons button:hover:not(.active) { color: var(--fg); }
+  .stepper-inner button:hover { color: var(--accent); }
+  .submit {
+    background: var(--accent);
+    border: 1px solid var(--accent);
+    color: var(--bg);
+    padding: 0 18px;
+    border-radius: 5px;
+    cursor: pointer;
+    font-family: inherit;
+    font-size: 13px;
+    font-weight: 600;
+    height: 32px;
+  }
+  .submit:hover { filter: brightness(1.08); }
+  .submit:disabled { opacity: 0.5; cursor: wait; }
+  .enqueue-status {
+    margin-top: 12px;
+    font-size: 12px;
+    color: var(--fg-dim);
+    font-family: "SF Mono", Menlo, monospace;
+    min-height: 16px;
+  }
+  .enqueue-status.ok { color: var(--ok); }
+  .enqueue-status.err { color: var(--danger); }
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <h1>Task Queue</h1>
+    <span class="sub">Go + Redis distributed worker demo</span>
+  </div>
+  <div class="status"><span class="dot" id="statusDot"></span><span id="statusText">connecting</span></div>
+</header>
+
+<div class="grid">
+  <div class="panel wide" id="enqueuePanel">
+    <h2>Enqueue</h2>
+    <div class="enqueue-row">
+      <label>
+        <span class="field-label">Type</span>
+        <select id="enqType">
+          <option value="email">email</option>
+          <option value="image_resize">image_resize</option>
+          <option value="report">report</option>
+          <option value="nonexistent">nonexistent (DLQ test)</option>
+        </select>
+      </label>
+      <div class="toggle" data-name="priority">
+        <span class="field-label">Priority</span>
+        <div class="toggle-buttons">
+          <button type="button" data-value="high" class="active">high</button>
+          <button type="button" data-value="low">low</button>
+        </div>
+      </div>
+      <div class="toggle" data-name="tenant">
+        <span class="field-label">Tenant</span>
+        <div class="toggle-buttons">
+          <button type="button" data-value="default" class="active">default</button>
+          <button type="button" data-value="acme">acme</button>
+        </div>
+      </div>
+      <div class="stepper">
+        <span class="field-label">Count</span>
+        <div class="stepper-inner">
+          <button type="button" id="countDown" aria-label="decrement">&minus;</button>
+          <input type="number" id="enqCount" min="1" max="100" value="10">
+          <button type="button" id="countUp" aria-label="increment">+</button>
+        </div>
+      </div>
+      <label class="payload">
+        <span class="field-label">Payload</span>
+        <input type="text" id="enqPayload" placeholder="demo task">
+      </label>
+      <button type="button" id="enqSubmit" class="submit">Submit</button>
+    </div>
+    <div class="enqueue-status" id="enqStatus"></div>
+  </div>
+  <div class="panel">
+    <h2>Queue Depth</h2>
+    <div class="chart-wrap"><canvas id="depthChart"></canvas></div>
+  </div>
+  <div class="panel">
+    <h2>Throughput (events / sec)</h2>
+    <div class="chart-wrap"><canvas id="throughputChart"></canvas></div>
+  </div>
+  <div class="panel">
+    <h2>Latency p50 / p95 (seconds)</h2>
+    <div class="chart-wrap"><canvas id="latencyChart"></canvas></div>
+  </div>
+  <div class="panel">
+    <h2>Gate Denials (events / sec)</h2>
+    <div class="chart-wrap"><canvas id="denialChart"></canvas></div>
+  </div>
+  <div class="panel wide">
+    <h2>Dead Letter Queue</h2>
+    <table id="dlqTable">
+      <thead>
+        <tr>
+          <th>ID</th>
+          <th>Type</th>
+          <th>Queue</th>
+          <th>Attempts</th>
+          <th>Enqueued</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+    <div class="empty" id="dlqEmpty">No entries.</div>
+  </div>
+</div>
+
+<script>
+const POLL_INTERVAL_MS = 1000;
+const HISTORY_POINTS = 60;
+const COLORS = {
+  accent: '#60a5fa',
+  ok: '#10b981',
+  danger: '#ef4444',
+  warn: '#f59e0b',
+  dim: '#9aa0b0',
+  grid: '#262a35',
+  fg: '#e4e6eb',
+};
+
+function parseProm(text) {
+  const metrics = {};
+  const lines = text.split('\n');
+  const lineRe = /^([a-zA-Z_:][a-zA-Z0-9_:]*)(\{[^}]*\})?\s+([^\s]+)/;
+  const labelRe = /([a-zA-Z_][a-zA-Z0-9_]*)="((?:\\.|[^"\\])*)"/g;
+  for (const line of lines) {
+    if (!line || line[0] === '#') continue;
+    const m = line.match(lineRe);
+    if (!m) continue;
+    const [, name, labelPart, valueStr] = m;
+    const value = parseFloat(valueStr);
+    if (!isFinite(value)) continue;
+    const labels = {};
+    if (labelPart) {
+      const inner = labelPart.slice(1, -1);
+      let lm;
+      labelRe.lastIndex = 0;
+      while ((lm = labelRe.exec(inner)) !== null) {
+        labels[lm[1]] = lm[2].replace(/\\"/g, '"').replace(/\\\\/g, '\\').replace(/\\n/g, '\n');
+      }
+    }
+    if (!metrics[name]) metrics[name] = [];
+    metrics[name].push({ labels, value });
+  }
+  return metrics;
+}
+
+function samples(metrics, name, filter) {
+  const rows = metrics[name] || [];
+  if (!filter) return rows;
+  return rows.filter(r => Object.entries(filter).every(([k, v]) => r.labels[k] === v));
+}
+
+function sum(metrics, name, filter) {
+  return samples(metrics, name, filter).reduce((acc, r) => acc + r.value, 0);
+}
+
+function histogramQuantile(metrics, baseName, filter, q) {
+  const all = samples(metrics, baseName + '_bucket', filter);
+  const byLe = new Map();
+  for (const r of all) {
+    const le = r.labels.le === '+Inf' ? Infinity : parseFloat(r.labels.le);
+    byLe.set(le, (byLe.get(le) || 0) + r.value);
+  }
+  const buckets = Array.from(byLe.entries())
+    .sort((a, b) => a[0] - b[0])
+    .map(([le, count]) => ({ le, count }));
+  if (buckets.length === 0) return NaN;
+  const total = buckets[buckets.length - 1].count;
+  if (total === 0) return NaN;
+  const target = q * total;
+  let prevCount = 0, prevLe = 0;
+  for (const b of buckets) {
+    if (b.count >= target) {
+      if (b.le === Infinity) return prevLe;
+      if (b.count === prevCount) return prevLe;
+      return prevLe + (b.le - prevLe) * ((target - prevCount) / (b.count - prevCount));
+    }
+    prevCount = b.count;
+    prevLe = b.le;
+  }
+  return buckets[buckets.length - 1].le;
+}
+
+function pushHistory(obj, key, value) {
+  if (!obj[key]) obj[key] = [];
+  obj[key].push(value);
+  if (obj[key].length > HISTORY_POINTS) obj[key].shift();
+}
+
+const prev = { worker: null, server: null, ts: null };
+const history = { throughput: {}, denial: {} };
+
+const commonOpts = {
+  responsive: true,
+  maintainAspectRatio: false,
+  animation: false,
+  interaction: { mode: 'index', intersect: false },
+  scales: {
+    x: { ticks: { color: COLORS.dim, font: { size: 10 } }, grid: { color: COLORS.grid } },
+    y: { ticks: { color: COLORS.dim, font: { size: 10 } }, grid: { color: COLORS.grid }, beginAtZero: true },
+  },
+  plugins: {
+    legend: { labels: { color: COLORS.fg, font: { size: 11 }, boxWidth: 12 } },
+    tooltip: { backgroundColor: '#171a21', titleColor: COLORS.fg, bodyColor: COLORS.fg, borderColor: COLORS.grid, borderWidth: 1 },
+  },
+};
+
+const depthChart = new Chart(document.getElementById('depthChart'), {
+  type: 'bar',
+  data: { labels: [], datasets: [{
+    label: 'Depth',
+    data: [],
+    backgroundColor: COLORS.accent,
+    borderRadius: 3,
+  }]},
+  options: { ...commonOpts, plugins: { ...commonOpts.plugins, legend: { display: false } } },
+});
+
+const throughputChart = new Chart(document.getElementById('throughputChart'), {
+  type: 'line',
+  data: {
+    labels: [],
+    datasets: [
+      { label: 'claimed', data: [], borderColor: COLORS.accent, backgroundColor: 'transparent', tension: 0.3, pointRadius: 0, borderWidth: 2 },
+      { label: 'completed', data: [], borderColor: COLORS.ok, backgroundColor: 'transparent', tension: 0.3, pointRadius: 0, borderWidth: 2 },
+      { label: 'failed', data: [], borderColor: COLORS.danger, backgroundColor: 'transparent', tension: 0.3, pointRadius: 0, borderWidth: 2 },
+    ],
+  },
+  options: commonOpts,
+});
+
+const latencyChart = new Chart(document.getElementById('latencyChart'), {
+  type: 'bar',
+  data: { labels: [], datasets: [
+    { label: 'p50', data: [], backgroundColor: COLORS.accent, borderRadius: 3 },
+    { label: 'p95', data: [], backgroundColor: COLORS.warn, borderRadius: 3 },
+  ]},
+  options: commonOpts,
+});
+
+const denialChart = new Chart(document.getElementById('denialChart'), {
+  type: 'line',
+  data: {
+    labels: [],
+    datasets: [
+      { label: 'slot', data: [], borderColor: COLORS.warn, backgroundColor: 'transparent', tension: 0.3, pointRadius: 0, borderWidth: 2 },
+      { label: 'token', data: [], borderColor: COLORS.danger, backgroundColor: 'transparent', tension: 0.3, pointRadius: 0, borderWidth: 2 },
+    ],
+  },
+  options: commonOpts,
+});
+
+function shortQueue(q) {
+  return q.replace(/^queue:/, '');
+}
+
+function timeLabel(d) {
+  return d.toLocaleTimeString('en-US', { hour12: false }).slice(3, 8);
+}
+
+function setStatus(ok, msg) {
+  const dot = document.getElementById('statusDot');
+  const text = document.getElementById('statusText');
+  if (ok) {
+    dot.classList.remove('err');
+    text.textContent = 'live, updated ' + new Date().toLocaleTimeString('en-US', { hour12: false });
+  } else {
+    dot.classList.add('err');
+    text.textContent = 'offline: ' + (msg || 'cannot reach backend');
+  }
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+function renderDLQ(entries) {
+  const tbody = document.querySelector('#dlqTable tbody');
+  const empty = document.getElementById('dlqEmpty');
+  const table = document.getElementById('dlqTable');
+  if (!entries || entries.length === 0) {
+    tbody.innerHTML = '';
+    empty.style.display = '';
+    table.style.display = 'none';
+    return;
+  }
+  empty.style.display = 'none';
+  table.style.display = '';
+  tbody.innerHTML = entries.map(t => {
+    const idShort = (t.id || '').slice(0, 8);
+    const enqTime = t.enqueued_at ? new Date(t.enqueued_at).toLocaleTimeString('en-US', { hour12: false }) : '';
+    return (
+      '<tr>' +
+      '<td><code class="id">' + escapeHtml(idShort) + '</code></td>' +
+      '<td>' + escapeHtml(t.type || '') + '</td>' +
+      '<td>' + escapeHtml(shortQueue(t.queue || '')) + '</td>' +
+      '<td>' + (t.attempts || 0) + '</td>' +
+      '<td>' + escapeHtml(enqTime) + '</td>' +
+      '<td class="actions">' +
+      '<button data-id="' + escapeHtml(t.id) + '" data-action="requeue">Requeue</button>' +
+      '<button class="drop" data-id="' + escapeHtml(t.id) + '" data-action="drop">Drop</button>' +
+      '</td>' +
+      '</tr>'
+    );
+  }).join('');
+}
+
+document.querySelector('#dlqTable').addEventListener('click', async (e) => {
+  const btn = e.target.closest('button[data-action]');
+  if (!btn) return;
+  const id = btn.getAttribute('data-id');
+  const action = btn.getAttribute('data-action');
+  if (action === 'drop' && !confirm('Drop this task permanently?')) return;
+  btn.disabled = true;
+  try {
+    const url = action === 'requeue' ? '/dlq/requeue?id=' + encodeURIComponent(id) : '/dlq/drop?id=' + encodeURIComponent(id);
+    const r = await fetch(url, { method: 'POST' });
+    if (!r.ok) alert(action + ' failed: ' + await r.text());
+  } finally {
+    btn.disabled = false;
+    tick();
+  }
+});
+
+async function tick() {
+  const now = Date.now();
+  let serverText, workerText, dlq;
+  try {
+    const [sr, wr, dr] = await Promise.all([
+      fetch('/metrics'),
+      fetch('/worker/metrics'),
+      fetch('/dlq'),
+    ]);
+    if (!sr.ok) throw new Error('server /metrics ' + sr.status);
+    if (!wr.ok) throw new Error('worker /metrics ' + wr.status);
+    if (!dr.ok) throw new Error('/dlq ' + dr.status);
+    serverText = await sr.text();
+    workerText = await wr.text();
+    dlq = await dr.json();
+    setStatus(true);
+  } catch (err) {
+    setStatus(false, err.message);
+    return;
+  }
+  const server = parseProm(serverText);
+  const worker = parseProm(workerText);
+
+  const depthRows = samples(worker, 'taskqueue_queue_depth');
+  depthRows.sort((a, b) => (a.labels.state + a.labels.queue).localeCompare(b.labels.state + b.labels.queue));
+  depthChart.data.labels = depthRows.map(r => shortQueue(r.labels.queue) + ' (' + r.labels.state + ')');
+  depthChart.data.datasets[0].data = depthRows.map(r => r.value);
+  depthChart.update();
+
+  const label = timeLabel(new Date(now));
+  if (prev.worker && prev.ts) {
+    const dt = (now - prev.ts) / 1000;
+    if (dt > 0) {
+      const rate = (name) => (sum(worker, name) - sum(prev.worker, name)) / dt;
+      pushHistory(history.throughput, 'labels', label);
+      pushHistory(history.throughput, 'claimed', rate('taskqueue_claimed_total'));
+      pushHistory(history.throughput, 'completed', rate('taskqueue_completed_total'));
+      pushHistory(history.throughput, 'failed', rate('taskqueue_dispatch_failed_total'));
+      pushHistory(history.denial, 'labels', label);
+      pushHistory(history.denial, 'slot', rate('taskqueue_slot_denied_total'));
+      pushHistory(history.denial, 'token', rate('taskqueue_token_denied_total'));
+      throughputChart.data.labels = history.throughput.labels;
+      throughputChart.data.datasets[0].data = history.throughput.claimed;
+      throughputChart.data.datasets[1].data = history.throughput.completed;
+      throughputChart.data.datasets[2].data = history.throughput.failed;
+      throughputChart.update();
+      denialChart.data.labels = history.denial.labels;
+      denialChart.data.datasets[0].data = history.denial.slot;
+      denialChart.data.datasets[1].data = history.denial.token;
+      denialChart.update();
+    }
+  }
+
+  const latencyQueues = Array.from(new Set(
+    samples(worker, 'taskqueue_task_duration_seconds_count').map(r => r.labels.queue)
+  )).sort();
+  latencyChart.data.labels = latencyQueues.map(shortQueue);
+  latencyChart.data.datasets[0].data = latencyQueues.map(q => histogramQuantile(worker, 'taskqueue_task_duration_seconds', { queue: q }, 0.5));
+  latencyChart.data.datasets[1].data = latencyQueues.map(q => histogramQuantile(worker, 'taskqueue_task_duration_seconds', { queue: q }, 0.95));
+  latencyChart.update();
+
+  renderDLQ(dlq);
+
+  prev.worker = worker;
+  prev.server = server;
+  prev.ts = now;
+}
+
+document.querySelectorAll('.toggle-buttons').forEach(group => {
+  group.addEventListener('click', e => {
+    const btn = e.target.closest('button[data-value]');
+    if (!btn) return;
+    group.querySelectorAll('button').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+  });
+});
+
+function clampCount(v) {
+  const n = parseInt(v, 10);
+  if (!isFinite(n)) return 1;
+  return Math.max(1, Math.min(100, n));
+}
+const countEl = document.getElementById('enqCount');
+document.getElementById('countDown').addEventListener('click', () => {
+  countEl.value = clampCount(parseInt(countEl.value, 10) - 1);
+});
+document.getElementById('countUp').addEventListener('click', () => {
+  countEl.value = clampCount(parseInt(countEl.value, 10) + 1);
+});
+countEl.addEventListener('change', () => { countEl.value = clampCount(countEl.value); });
+
+const statusEl = document.getElementById('enqStatus');
+function setEnqStatus(msg, kind) {
+  statusEl.textContent = msg;
+  statusEl.className = 'enqueue-status ' + (kind || '');
+}
+
+document.getElementById('enqSubmit').addEventListener('click', async (e) => {
+  const btn = e.currentTarget;
+  const type = document.getElementById('enqType').value;
+  const priority = document.querySelector('.toggle[data-name="priority"] button.active').getAttribute('data-value');
+  const tenant = document.querySelector('.toggle[data-name="tenant"] button.active').getAttribute('data-value');
+  const count = clampCount(countEl.value);
+  const payload = document.getElementById('enqPayload').value || 'demo task';
+  const params = new URLSearchParams({ type, priority, tenant, count: String(count) });
+  btn.disabled = true;
+  setEnqStatus('enqueueing ' + count + ' x ' + type + ' on queue:' + tenant + ':' + priority + '…', '');
+  try {
+    const r = await fetch('/enqueue?' + params.toString(), {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain' },
+      body: payload,
+    });
+    const text = await r.text();
+    if (!r.ok) {
+      setEnqStatus('failed: ' + text.trim(), 'err');
+    } else {
+      setEnqStatus(text.trim() + ' on queue:' + tenant + ':' + priority + ' (payload: ' + payload + ')', 'ok');
+      tick();
+    }
+  } catch (err) {
+    setEnqStatus('error: ' + err.message, 'err');
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+tick();
+setInterval(tick, POLL_INTERVAL_MS);
+</script>
+</body>
+</html>

@@ -59,6 +59,11 @@ var (
 		Help:    "End-to-end task latency measured from enqueue to successful completion.",
 		Buckets: []float64{0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60},
 	}, []string{"queue", "type"})
+
+	QueueDepth = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "taskqueue_queue_depth",
+		Help: "Current number of entries per queue by state.",
+	}, []string{"queue", "state"})
 )
 
 func NewServer(addr string) *http.Server {
